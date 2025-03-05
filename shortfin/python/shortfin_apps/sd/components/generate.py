@@ -12,6 +12,8 @@ from datetime import datetime
 from dataclasses import dataclass
 
 from typing import (
+    Any,
+    Protocol,
     TypeVar,
     Union,
 )
@@ -110,10 +112,60 @@ class ServerTimingMetric:
         )
 
 
+class HTTPStructuredField(Protocol):
+    @property
+    def serialized(self) -> str:
+        ...
+
+
+class HTTPDecimalField(HTTPStructuredField, float):
+    @property
+    def serialized(self) -> str:
+        return f"{self}"
+
+
+class HTTPStringField(HTTPStructuredField, str):
+    @property
+    def serialized(self) -> str:
+        return f'"{self}"'
+
+
+class HTTPListField(HTTPStructuredField, list[HTTPStructuredField]):
+    @property
+    def serialized(self) -> str:
+        return ",".join([each.serialized for each in self])
+
+
+class HTTPBooleanField(HTTPStructuredField, bool):
+    @property
+    def serialized(self) -> str:
+        return f"?{1 if self else 0}"
+
+
+class HTTPParameterField(HTTPStructuredField, tuple[str, HTTPStructuredField]):
+    @property
+    def serialized(self) -> str:
+        [key, value] = self
+
+        if isinstance(value, HTTPBooleanField) and (value == True):
+            return key
+
+        return f"{key}={value.serialized}"
+
+
+class HTTPParametersField(HTTPStructuredField, dict[str, HTTPStructuredField]):
+    @property
+    def serialized(self) -> str:
+        serialized_parameter_fields = [
+            HTTPParameterField(each).serialized for each in self.items()
+        ]
+        return ";".join(serialized_parameter_fields)
+
+
 def serialized_server_timing_metrics_from(
-    given_metrics: list[ServerTimingMetric],
+    given_metrics: HTTPStructuredField,
 ) -> str:
-    return ", ".join([each.stringified for each in given_metrics])
+    return given_metrics.serialized
 
 
 class ClientGenerateBatchProcess(sf.Process):
@@ -185,22 +237,26 @@ class ClientGenerateBatchProcess(sf.Process):
                 seconds=prompt_to_png_batch_timedelta.total_seconds()
             )
 
-            server_timing_metrics = serialized_server_timing_metrics_from(
+            server_timing_metrics = HTTPListField(
                 [
-                    ServerTimingMetric(
-                        name="pre",
-                        description="Batch Pre-processing",
-                        duration_in_milliseconds=0,
+                    HTTPParametersField(
+                        pre=HTTPBooleanField(True),
+                        desc=HTTPStringField("Batch Pre-processing"),
+                        dur=HTTPDecimalField(0),
                     ),
-                    ServerTimingMetric(
-                        name="infer",
-                        description="Batch Inference",
-                        duration_in_milliseconds=prompt_to_png_batch_duration_in_milliseconds,
+                    HTTPParametersField(
+                        infer=HTTPBooleanField(True),
+                        desc=HTTPStringField("Batch Inference"),
+                        dur=HTTPDecimalField(
+                            prompt_to_png_batch_duration_in_milliseconds
+                        ),
                     ),
-                    ServerTimingMetric(
-                        name="post",
-                        description="Batch Post-processing",
-                        duration_in_milliseconds=prompt_to_png_batch_duration_in_milliseconds,
+                    HTTPParametersField(
+                        post=HTTPBooleanField(True),
+                        desc=HTTPStringField("Batch Post-processing"),
+                        dur=HTTPDecimalField(
+                            prompt_to_png_batch_duration_in_milliseconds
+                        ),
                     ),
                 ]
             )
@@ -211,7 +267,7 @@ class ClientGenerateBatchProcess(sf.Process):
                         "images": png_images,
                     },
                     headers={
-                        "Server-Timing": server_timing_metrics,  # https://w3c.github.io/server-timing
+                        "Server-Timing": server_timing_metrics.serialized,  # https://w3c.github.io/server-timing
                     },
                     media_type="application/json",
                 )
