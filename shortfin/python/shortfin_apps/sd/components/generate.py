@@ -7,6 +7,10 @@
 import asyncio
 import logging
 
+from datetime import datetime
+
+from dataclasses import dataclass
+
 from typing import (
     TypeVar,
     Union,
@@ -70,6 +74,48 @@ class GenerateImageProcess(sf.Process):
         )
 
 
+from enum import Enum
+
+
+class MetricPrefix(Enum):
+    MILLI = 10 ** (-3)
+
+
+def seconds_from(
+    milliseconds: float = 0,
+) -> float:
+    return milliseconds * MetricPrefix.MILLI.value
+
+
+def milliseconds_from(
+    seconds: float = 0,
+) -> float:
+    return seconds / MetricPrefix.MILLI.value
+
+
+@dataclass
+class ServerTimingMetric:
+    name: str
+    description: str
+    duration_in_milliseconds: float
+
+    @property
+    def stringified(self) -> str:
+        return ";".join(
+            [
+                self.name,
+                f'desc="{self.description}"',
+                f"dur={self.duration_in_milliseconds}",
+            ]
+        )
+
+
+def serialized_server_timing_metrics_from(
+    given_metrics: list[ServerTimingMetric],
+) -> str:
+    return ", ".join([each.stringified for each in given_metrics])
+
+
 class ClientGenerateBatchProcess(sf.Process):
     """Process instantiated for handling a batch from a client.
 
@@ -103,6 +149,8 @@ class ClientGenerateBatchProcess(sf.Process):
 
     async def run(self):
         logger.debug("Started ClientBatchGenerateProcess: %r", self)
+        prompt_to_png_batch_interval_start = datetime.now()
+
         try:
             # Launch all individual generate processes and wait for them to finish.
             gen_processes: list[GenerateImageProcess] = []
@@ -127,10 +175,43 @@ class ClientGenerateBatchProcess(sf.Process):
                 each_png_image = png_from(each_process.output.image)
                 png_images.append(each_png_image)
 
+            prompt_to_png_batch_interval_end = datetime.now()
+
+            prompt_to_png_batch_timedelta = (
+                prompt_to_png_batch_interval_end - prompt_to_png_batch_interval_start
+            )
+
+            prompt_to_png_batch_duration_in_milliseconds = milliseconds_from(
+                seconds=prompt_to_png_batch_timedelta.total_seconds()
+            )
+
+            server_timing_metrics = serialized_server_timing_metrics_from(
+                [
+                    ServerTimingMetric(
+                        name="pre",
+                        description="Batch Pre-processing",
+                        duration_in_milliseconds=0,
+                    ),
+                    ServerTimingMetric(
+                        name="infer",
+                        description="Batch Inference",
+                        duration_in_milliseconds=prompt_to_png_batch_duration_in_milliseconds,
+                    ),
+                    ServerTimingMetric(
+                        name="post",
+                        description="Batch Post-processing",
+                        duration_in_milliseconds=prompt_to_png_batch_duration_in_milliseconds,
+                    ),
+                ]
+            )
+
             self.responder.send_response(
                 JSONResponse(
                     content={
                         "images": png_images,
+                    },
+                    headers={
+                        "Server-Timing": server_timing_metrics,  # https://w3c.github.io/server-timing
                     },
                     media_type="application/json",
                 )
