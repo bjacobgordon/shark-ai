@@ -465,6 +465,7 @@ def main(argv, log_config=UVICORN_LOG_CONFIG):
         port=args.port,
         log_config=log_config,
         timeout_keep_alive=args.timeout_keep_alive,
+        reload=True,
     )
 
 
