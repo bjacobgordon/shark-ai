@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  inference:
+    build:
+      context: ../shortfin
+      dockerfile: apps.sd.dev.Dockerfile
+    volumes:
+      - ../shortfin:/service
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+      PORT: "8000"
+    ports:
+      - "${INFERENCE_PORT:-8000}:8000"
+
+  browser-application:
+    build:
+      context: ../../shark-ui
+      dockerfile: dev.Dockerfile
+    volumes:
+      - ../../shark-ui:/service
+    environment:
+      PORT: "5173"
+    ports:
+      - "${BROWSER_PORT:-5173}:5173"
+    depends_on: [
+      inference,
+    ]
